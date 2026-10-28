@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cardboard Box Index SK/CZ</title>
+<meta name="description" content="Tok vlnitých krabíc cez Slovensko a Česko ako predstihový ukazovateľ maloobchodu. Dáta Eurostat.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400&display=swap">
+<style>
+  /* tokeny, ktoré stránka čaká od dashboardu; farby sérií = validovaná dataviz paleta */
+  :root {
+    color-scheme: light;
+    --font-anthropic-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-anthropic-serif: "Newsreader", Georgia, "Times New Roman", serif;
+    --color-bg: #f6f5f1; --color-panel: #fcfcfb; --color-fg: #1a1a19; --color-fg-muted: #5c5b57;
+    --color-border-line: #e2e0da; --color-bad: #d03b3b;
+    --cds-text-secondary: #5c5b57; --cds-border: #d8d6cf; --cds-surface-popover: #ffffff;
+    --cds-shadow-popover: 0 4px 16px rgba(26, 26, 25, .12);
+    --cds-chart-grid: #ecebe8; --cds-chart-axis: #b8b6ae; --cds-chart-reference: #c3c2b7; --cds-chart-muted: #b3b1a9;
+    --c0: #2a78d6; --c1: #eb6834; --c2: #1baf7a; --c3: #eda100; --c4: #e87ba4; --c5: #008300; --c6: #6250d6; --c7: #e34948;
+    --cds-gap-xs: 4px; --cds-gap-sm: 8px; --cds-gap-md: 16px; --cds-gap-lg: 24px; --cds-gap-xl: 40px;
+    --cds-pad-xs: 4px; --cds-pad-sm: 8px; --cds-pad-lg: 20px; --cds-radius: 8px;
+    --cds-font-size-caption: 0.8125rem; --cds-font-size-body: 0.9375rem; --cds-font-size-heading: 1.0625rem; --cds-font-size-title: 2rem;
+    --cds-font-weight-medium: 500; --cds-dur-slow: 300ms;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --color-bg: #141413; --color-panel: #1a1a19; --color-fg: #f0efec; --color-fg-muted: #b5b4ab;
+      --color-border-line: #2e2e2b; --color-bad: #e66767;
+      --cds-text-secondary: #b5b4ab; --cds-border: #3a3a36; --cds-surface-popover: #23231f;
+      --cds-shadow-popover: 0 4px 16px rgba(0, 0, 0, .4);
+      --cds-chart-grid: #2a2a27; --cds-chart-axis: #5a5a54; --cds-chart-reference: #4a4a45; --cds-chart-muted: #6b6a63;
+      --c0: #3987e5; --c1: #d95926; --c2: #199e70; --c3: #c98500; --c4: #d55181; --c5: #2fa52f; --c6: #9085e9; --c7: #e66767;
+    }
+  }
+  html, body { margin: 0; background: var(--color-bg); color: var(--color-fg); font-family: var(--font-anthropic-sans); font-size: 15px; }
+  #dash-root { padding-block: 32px 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .dash-skeleton { background: linear-gradient(90deg, var(--cds-chart-grid), var(--color-panel), var(--cds-chart-grid)); background-size: 200% 100%; border-radius: var(--cds-radius); }
+  @media (prefers-reduced-motion: no-preference) { .dash-skeleton { animation: cb-shimmer 1.4s linear infinite; } }
+  @keyframes cb-shimmer { to { background-position: -200% 0; } }
+  .cb-foot { max-width: 72rem; margin: var(--cds-gap-xl) auto 0; font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); line-height: 1.5; }
+  .cb-foot a { color: inherit; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script>
+  // ponytail: malá náhrada runtime dashboardu, len to, čo stránka volá
+  window.dash = (() => {
+    const files = { boxes: 'data/eurostat-comext-krabice.json', production: 'data/eurostat-vyroba-lepenky.json', retail: 'data/eurostat-maloobchod.json' };
+    const raw = {}, calcs = {}, cache = {}, draws = {}, subs = [];
+    let state = 'loading', p = { window: '2y', lag: 6 };
+    const data = (id) => {
+      if (state !== 'ok') return { status: state, data: [] };
+      if (raw[id]) return { status: 'ok', data: raw[id] };
+      const c = calcs[id];
+      if (!c) return { status: 'missing', data: [] };
+      cache[id] ??= c.fn(...c.inputs.map((i) => data(i).data));
+      return { status: 'ok', data: cache[id] };
+    };
+    const run = () => {
+      subs.forEach((f) => f());
+      for (const [n, f] of Object.entries(draws)) document.querySelectorAll(`[data-draw="${n}"]`).forEach((el) => f(el));
+    };
+    const start = () => {
+      run();
+      Promise.all(Object.entries(files).map(([id, u]) => fetch(u).then((r) => { if (!r.ok) throw new Error(u); return r.json(); }).then((j) => { raw[id] = j; })))
+        .then(() => { state = 'ok'; }, () => { state = 'error'; })
+        .then(run);
+      let t, w = 0;
+      new ResizeObserver(([e]) => { if (Math.abs(e.contentRect.width - w) < 1) return; w = e.contentRect.width; clearTimeout(t); t = setTimeout(run, 120); }).observe(document.getElementById('dash-root'));
+    };
+    return {
+      colors: [0, 1, 2, 3, 4, 5, 6, 7].map((i) => `var(--c${i})`),
+      data, params: () => p, setParams: (q) => { p = { ...p, ...q }; run(); },
+      calc: (id, c) => { calcs[id] = c; }, draw: (n, f) => { draws[n] = f; }, onData: (f) => subs.push(f), start,
+    };
+  })();
+</script>
+</head>
+<body>
+<div id="dash-root">
+<style>
+  .cb { display: grid; gap: var(--cds-gap-xl); font-family: var(--font-anthropic-sans); max-width: 72rem; margin-inline: auto; }
+  .cb-head { display: grid; gap: var(--cds-gap-xs); }
+  .cb-head h1 { margin: 0; font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); text-wrap: balance; }
+  .cb-head p { margin: 0; max-width: 62ch; color: var(--color-fg-muted); font-size: var(--cds-font-size-body); line-height: 1.5; }
+  .cb .cb-strong { font-weight: 600; color: var(--color-fg); font-variant-numeric: tabular-nums; }
+  .cb-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); gap: var(--cds-gap-md); }
+  .cb-card { min-width: 0; display: grid; gap: var(--cds-gap-sm); align-content: start; background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: var(--cds-pad-lg); }
+  .cb-label { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+  .cb-big { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .cb-sub { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); font-variant-numeric: tabular-nums; }
+  .cb-sec { display: grid; gap: var(--cds-gap-md); }
+  .cb-sec > h2 { margin: 0; font-size: var(--cds-font-size-heading); font-weight: var(--cds-font-weight-medium); }
+  .cb-sec > p { margin: 0; max-width: 70ch; color: var(--color-fg-muted); line-height: 1.5; }
+  .cb-card h3 { margin: 0; font-size: var(--cds-font-size-heading); font-weight: var(--cds-font-weight-medium); }
+  .cb-note { margin: 0; max-width: 70ch; font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); line-height: 1.5; }
+  .cb-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--cds-gap-sm); }
+  .cb-seg { display: inline-flex; border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); overflow: hidden; }
+  .cb-seg button { font: inherit; font-size: var(--cds-font-size-caption); padding: var(--cds-pad-xs) var(--cds-pad-sm); background: transparent; color: var(--color-fg-muted); border: 0; cursor: pointer; }
+  .cb-seg button[aria-pressed="true"] { background: var(--color-fg); color: var(--color-bg); }
+  .cb-seg button:focus-visible, .cb-lag:focus-visible { outline: 2px solid var(--color-fg); outline-offset: 2px; }
+  .cb-legend { display: flex; flex-wrap: wrap; gap: var(--cds-gap-xs) var(--cds-gap-md); margin: 0; padding: 0; list-style: none; font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+  .cb-legend li { display: inline-flex; align-items: center; gap: 6px; }
+  .cb-sw { width: 14px; height: 3px; border-radius: 2px; background: var(--cds-chart-muted); }
+  .cb-chart { position: relative; min-height: 340px; }
+  .cb-chart.cb-small { min-height: 260px; }
+  .cb-chart svg { display: block; overflow: visible; }
+  .cb-chart text { font-family: var(--font-anthropic-sans); font-size: 12px; fill: var(--color-fg-muted); }
+  .cb-chart text.cb-end { fill: var(--color-fg); }
+  .cb-tip { position: absolute; z-index: 2; pointer-events: none; background: var(--cds-surface-popover); border: 1px solid var(--cds-border); border-radius: var(--cds-radius); box-shadow: var(--cds-shadow-popover); padding: var(--cds-pad-xs) var(--cds-pad-sm); font-size: var(--cds-font-size-caption); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .cb-tip .cb-tip-h { color: var(--cds-text-secondary); margin-bottom: 2px; }
+  .cb-tip .cb-tip-r { display: flex; align-items: center; gap: 6px; }
+  .cb-fail { display: flex; align-items: center; justify-content: center; gap: 6px; height: 100%; min-height: inherit; font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+  .cb-fail::before { content: ""; width: .375rem; height: .375rem; border-radius: 50%; background: var(--color-bad); }
+  .cb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr)); gap: var(--cds-gap-md); }
+  .cb-slider { display: flex; flex-wrap: wrap; align-items: center; gap: var(--cds-gap-sm); font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+  .cb-lag { flex: 1 1 10rem; min-width: 0; accent-color: var(--color-fg); }
+  .cb-table-wrap { overflow-x: auto; }
+  .cb-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: var(--cds-font-size-body); }
+  .cb-table th { text-align: right; font-weight: var(--cds-font-weight-medium); font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); padding: var(--cds-pad-xs) var(--cds-pad-sm); border-bottom: 1px solid var(--color-border-line); }
+  .cb-table td { text-align: right; padding: var(--cds-pad-xs) var(--cds-pad-sm); border-bottom: 1px solid var(--color-border-line); }
+  .cb-table th:first-child, .cb-table td:first-child { text-align: left; }
+  .cb-read { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: var(--cds-gap-lg); }
+  .cb-read h3 { margin: 0 0 var(--cds-gap-xs); font-size: var(--cds-font-size-body); font-weight: var(--cds-font-weight-medium); }
+  .cb-read p { margin: 0; line-height: 1.55; }
+  [data-dash-source-state=refreshing] { opacity: .5; transition: opacity var(--cds-dur-slow); }
+  [data-dash-source-state=empty] { color: transparent; }
+</style>
+
+<div class="cb">
+  <header class="cb-head" id="prehlad">
+    <h1>Cardboard Box Index SK/CZ</h1>
+    <p>Slovenské krabice predbiehajú maloobchod asi o pol roka. Predpoveď na <span class="cb-strong" data-draw="fc-month" data-source="model" data-field="month" data-row="2">—</span> je <span class="cb-strong" data-draw="fc-value" data-source="model" data-field="forecast" data-row="2">—</span> medziročne. Košík na Slovensku nerastie, ani nepadá.</p>
+  </header>
+
+  <div class="cb-tiles" id="cisla">
+    <div class="cb-card">
+      <span class="cb-label">SK krabice, index 3M (2021 = 100)</span>
+      <span class="cb-big" data-draw="sk-index" data-source="latest" data-field="ma3" data-where="series=sk_boxes">—</span>
+      <span class="cb-sub">medziročne <span data-draw="sk-yoy" data-source="latest" data-field="yoy3" data-where="series=sk_boxes">—</span>, stav k <span data-draw="sk-month" data-source="latest" data-field="month" data-where="series=sk_boxes">—</span></span>
+    </div>
+    <div class="cb-card">
+      <span class="cb-label">Korelácia s maloobchodom o 6 mesiacov</span>
+      <span class="cb-big" data-draw="r6" data-source="lead" data-field="r" data-where="country=sk&amp;lag=6">—</span>
+      <span class="cb-sub">bez covidových rokov, <span data-draw="r6-n" data-source="lead" data-field="n" data-where="country=sk&amp;lag=6">—</span> mesiacov</span>
+    </div>
+    <div class="cb-card">
+      <span class="cb-label">Koľko pohybu maloobchodu vysvetlíme</span>
+      <span class="cb-big"><span data-draw="r2-boxes" data-source="model" data-field="r2_boxes" data-row="0">—</span> %</span>
+      <span class="cb-sub">s krabicami, bez nich <span data-draw="r2-own" data-source="model" data-field="r2_own" data-row="0">—</span> %</span>
+    </div>
+    <div class="cb-card">
+      <span class="cb-label">Predpoveď SK maloobchodu, medziročne</span>
+      <span class="cb-big" data-draw="fc-big" data-source="model" data-field="forecast" data-row="2">—</span>
+      <span class="cb-sub"><span data-draw="fc-big-month" data-source="model" data-field="month" data-row="2">—</span>, chyba ± <span data-draw="fc-err" data-source="model" data-field="error" data-row="2">—</span> p. b.</span>
+    </div>
+  </div>
+
+  <section class="cb-sec" id="index">
+    <h2>Koľko krabíc sa hýbe</h2>
+    <p>Tok krabíc cez Slovensko a Česko vedľa európskej výroby vlnitej lepenky. Všetko je prepočítané na rok 2021 = 100, takže čiary sa dajú porovnať na jednej osi.</p>
+    <div class="cb-card">
+      <div class="cb-bar">
+        <div class="cb-seg" role="group" aria-label="Obdobie">
+          <button type="button" class="cb-win" value="2y" aria-pressed="true">2 roky · 3M priemer</button>
+          <button type="button" class="cb-win" value="10y" aria-pressed="false">10 rokov · 12M priemer</button>
+        </div>
+        <ul class="cb-legend">
+          <li><span class="cb-sw" data-color="0"></span>SK krabice</li>
+          <li><span class="cb-sw" data-color="1"></span>CZ krabice</li>
+          <li><span class="cb-sw" data-color="2"></span>CZ výroba papiera</li>
+          <li><span class="cb-sw" data-color="3"></span>EU27 vlnitá lepenka</li>
+          <li><span class="cb-sw" data-color="4"></span>DE vlnitá lepenka</li>
+        </ul>
+      </div>
+      <div class="cb-chart dash-skeleton" id="index-chart" data-draw="index-chart" data-source="index"></div>
+      <p class="cb-note cb-note-2y">Krabice SK a CZ nie sú sezónne očistené, preto skáču: novembrový vrchol sú Vianoce. Porovnávaj ich s rovnakým mesiacom minulého roka.</p>
+      <p class="cb-note cb-note-10y" hidden>12-mesačný priemer zmaže sezónu. Všetky čiary sa pretínajú v roku 2021, lebo je to báza. Zlom v 2021 je preto čiastočne optický, skutočný je pohyb po ňom.</p>
+    </div>
+  </section>
+
+  <section class="cb-sec" id="predstih">
+    <h2>Predbiehajú krabice obchod?</h2>
+    <p>Posuň krabice dopredu a sleduj, kedy sa najviac prekryjú s maloobchodom. Na Slovensku sa to stane okolo šiesteho mesiaca. V Česku sa neprekryjú nikdy.</p>
+    <div class="cb-grid">
+      <div class="cb-card">
+        <h3>SK krabice posunuté dopredu vs maloobchod</h3>
+        <p class="cb-note">Medziročná zmena 3M priemeru v %. Šedé pásmo sú covidové roky, výpočet ich vynecháva.</p>
+        <div class="cb-slider">
+          <label for="cb-lag">Posun</label>
+          <input id="cb-lag" class="cb-lag" type="range" min="0" max="12" step="1" value="6">
+          <span><span class="cb-strong" data-draw="lag-n">—</span> mes. · r = <span class="cb-strong" data-draw="lag-r" data-source="lead">—</span></span>
+        </div>
+        <ul class="cb-legend">
+          <li><span class="cb-sw" data-color="0"></span>SK krabice, posunuté</li>
+          <li><span class="cb-sw" data-color="5"></span>SK maloobchod</li>
+        </ul>
+        <div class="cb-chart cb-small" id="lag-chart" data-draw="lag-chart" data-source="index"></div>
+      </div>
+      <div class="cb-card">
+        <h3>Korelácia podľa posunu</h3>
+        <p class="cb-note">Každý stĺpec je jeden posun v mesiacoch. Kladné r znamená, že krabice a neskorší maloobchod idú spolu. Klikni na stĺpec a posun sa nastaví.</p>
+        <ul class="cb-legend">
+          <li><span class="cb-sw" data-color="0"></span>Slovensko</li>
+          <li><span class="cb-sw"></span>Česko</li>
+        </ul>
+        <div class="cb-chart cb-small" id="lag-bars" data-draw="lag-bars" data-source="lead"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="cb-sec" id="predpoved">
+    <h2>Predpoveď SK maloobchodu</h2>
+    <p>Model berie dnešný maloobchod a dnešné krabice a odhaduje maloobchod o 6 mesiacov. Pásmo je ± jedna chyba modelu, teda asi dve tretiny prípadov.</p>
+    <div class="cb-card">
+      <div class="cb-table-wrap">
+        <table class="cb-table" id="forecast-table" data-source="model" data-row-key="month">
+          <thead>
+            <tr>
+              <th data-field="month">Mesiac</th>
+              <th data-field="from">Z krabíc za</th>
+              <th data-field="forecast">Predpoveď</th>
+              <th data-field="low">Pásmo od</th>
+              <th data-field="high">Pásmo do</th>
+            </tr>
+          </thead>
+          <tbody data-draw="forecast-rows"></tbody>
+        </table>
+      </div>
+      <p class="cb-note">Kontrola v kalibračnom denníku: SK maloobchod za október až december 2026 skončí medziročne v pásme −1 až +3 %, istota 55 %. Skórujeme koncom februára 2027, keď Eurostat zverejní december.</p>
+    </div>
+  </section>
+
+  <section class="cb-sec" id="ako-citat">
+    <h2>Ako to čítať</h2>
+    <div class="cb-read">
+      <div>
+        <h3>Prečo krabice</h3>
+        <p>Všetko, čo sa vyrobí a predá, raz sedí v krabici. Keď krabíc pribúda, o pár mesiacov rastie aj spotreba. Alan Greenspan to sledoval ako jeden z prvých signálov ekonomiky.</p>
+      </div>
+      <div>
+        <h3>Odkiaľ sú dáta</h3>
+        <p>Výroba vlnitej lepenky je na Slovensku aj v Česku dôverná, štatistici ju nezverejnia. Meriame preto tok krabíc cez hranicu: dovoz plus vývoz vlnitých krabíc (colný kód 4819 10) v tonách. Vedľa je výroba lepenky v EÚ a Nemecku a výroba papiera v Česku. Všetko z Eurostatu.</p>
+      </div>
+      <div>
+        <h3>Ako sa počíta</h3>
+        <p>Každá séria je prepočítaná tak, aby priemer roku 2021 bol 100. Krabice nie sú sezónne očistené, preto 3-mesačný priemer a medziročná zmena. Korelácia aj model vynechávajú roky 2020 a 2021, covid by ich nafúkol.</p>
+      </div>
+      <div>
+        <h3>Limity</h3>
+        <p>Obchod nie je spotreba, domáca výroba krabíc chýba. Medziročné zmeny sa prekrývajú, takže nezávislých pozorovaní je len okolo 13. Posun 6 je najlepší z 19 skúšaných. Je to sľubný signál, overí ho až to, či trafí ďalšie kvartály. České krabice s maloobchodom nesúvisia, preto pre Česko predpoveď nerobíme.</p>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+dash.calc('index', {
+  title: 'Index 2021 = 100 a medziročná zmena',
+  description: 'Každá séria prepočítaná na priemer roku 2021 = 100, potom 3- a 12-mesačný kĺzavý priemer a medziročná zmena 3M priemeru v %.',
+  inputs: ['boxes', 'production', 'retail'],
+  fn: (boxes, production, retail) => {
+    const all = [...boxes, ...production, ...retail];
+    const out = [];
+    for (const s of [...new Set(all.map((r) => r.series))]) {
+      const rows = all.filter((r) => r.series === s).sort((a, b) => (a.month < b.month ? -1 : 1));
+      const base = rows.filter((r) => r.month.startsWith('2021'));
+      const b = base.reduce((t, r) => t + Number(r.value), 0) / base.length;
+      const v = rows.map((r) => (100 * Number(r.value)) / b);
+      const avg = (i, n) => (i >= n - 1 ? v.slice(i - n + 1, i + 1).reduce((t, x) => t + x, 0) / n : null);
+      rows.forEach((r, i) => out.push({ month: r.month, series: s, ma3: avg(i, 3), ma12: avg(i, 12) }));
+    }
+    const at = new Map(out.map((r) => [r.series + r.month, r]));
+    const r1 = (x) => (x == null ? null : Math.round(x * 10) / 10);
+    return out.map((r) => {
+      const p = at.get(r.series + (Number(r.month.slice(0, 4)) - 1) + r.month.slice(4));
+      const yoy = p && p.ma3 != null && r.ma3 != null ? 100 * (r.ma3 / p.ma3 - 1) : null;
+      return { month: r.month, series: r.series, ma3: r1(r.ma3), ma12: r1(r.ma12), yoy3: r1(yoy) };
+    });
+  },
+});
+dash.calc('latest', {
+  title: 'Posledný mesiac každej série',
+  description: 'Posledný mesiac s hodnotou 3M priemeru pre každú sériu z výpočtu indexu.',
+  inputs: ['index'],
+  fn: (index) => [...new Set(index.map((r) => r.series))].map((s) => {
+    const rows = index.filter((r) => r.series === s && r.ma3 != null);
+    return rows[rows.length - 1];
+  }),
+});
+dash.calc('lead', {
+  title: 'Korelácia krabíc s maloobchodom',
+  description: 'Pearsonova korelácia medziročnej zmeny krabíc v mesiaci t a maloobchodu v mesiaci t + posun, bez rokov 2020 a 2021 (covid).',
+  inputs: ['index'],
+  fn: (index) => {
+    const add = (m, k) => { const n = Number(m.slice(0, 4)) * 12 + Number(m.slice(5)) - 1 + k; return `${Math.floor(n / 12)}-${String((n % 12) + 1).padStart(2, '0')}`; };
+    const covid = (m) => m >= '2020-01' && m <= '2021-12';
+    const get = (s) => new Map(index.filter((r) => r.series === s && r.yoy3 != null).map((r) => [r.month, r.yoy3]));
+    const out = [];
+    for (const c of ['sk', 'cz']) {
+      const box = get(`${c}_boxes`), ret = get(`${c}_retail`);
+      for (let lag = -6; lag <= 12; lag++) {
+        const ts = [...box.keys()].filter((t) => ret.has(add(t, lag)) && !covid(t) && !covid(add(t, lag)));
+        const x = ts.map((t) => box.get(t)), y = ts.map((t) => ret.get(add(t, lag)));
+        const mx = x.reduce((a, b) => a + b, 0) / x.length, my = y.reduce((a, b) => a + b, 0) / y.length;
+        let sxy = 0, sxx = 0, syy = 0;
+        x.forEach((xi, i) => { sxy += (xi - mx) * (y[i] - my); sxx += (xi - mx) ** 2; syy += (y[i] - my) ** 2; });
+        out.push({ country: c, lag, r: Math.round((sxy / Math.sqrt(sxx * syy)) * 100) / 100, n: ts.length });
+      }
+    }
+    return out;
+  },
+});
+dash.calc('model', {
+  title: 'Predpoveď SK maloobchodu',
+  description: 'Lineárna regresia: medziročná zmena SK maloobchodu o 6 mesiacov = a + b · maloobchod dnes + c · krabice dnes, bez covidu. Chyba je smerodajná odchýlka rezíduí.',
+  inputs: ['index'],
+  fn: (index) => {
+    const add = (m, k) => { const n = Number(m.slice(0, 4)) * 12 + Number(m.slice(5)) - 1 + k; return `${Math.floor(n / 12)}-${String((n % 12) + 1).padStart(2, '0')}`; };
+    const covid = (m) => m >= '2020-01' && m <= '2021-12';
+    const get = (s) => new Map(index.filter((r) => r.series === s && r.yoy3 != null).map((r) => [r.month, r.yoy3]));
+    const box = get('sk_boxes'), ret = get('sk_retail');
+    const ts = [...box.keys()].filter((t) => ret.has(t) && ret.has(add(t, 6)) && !covid(t) && !covid(add(t, 6)));
+    const y = ts.map((t) => ret.get(add(t, 6)));
+    const fit = (cols) => {
+      const X = ts.map((t, i) => [1, ...cols.map((c) => c[i])]);
+      const k = X[0].length;
+      const A = [...Array(k)].map((_, a) => [...Array(k)].map((_, b) => X.reduce((s, row) => s + row[a] * row[b], 0)));
+      const v = [...Array(k)].map((_, a) => X.reduce((s, row, i) => s + row[a] * y[i], 0));
+      for (let p = 0; p < k; p++) for (let q = p + 1; q < k; q++) { const f = A[q][p] / A[p][p]; for (let j = p; j < k; j++) A[q][j] -= f * A[p][j]; v[q] -= f * v[p]; }
+      const beta = Array(k).fill(0);
+      for (let p = k - 1; p >= 0; p--) beta[p] = (v[p] - A[p].slice(p + 1).reduce((s, a, j) => s + a * beta[p + 1 + j], 0)) / A[p][p];
+      const e = X.map((row, i) => y[i] - row.reduce((s, a, j) => s + a * beta[j], 0));
+      const my = y.reduce((s, a) => s + a, 0) / y.length;
+      const ve = e.reduce((s, a) => s + a * a, 0) / e.length, vy = y.reduce((s, a) => s + (a - my) ** 2, 0) / y.length;
+      return { beta, r2: 1 - ve / vy, sd: Math.sqrt(ve) };
+    };
+    const own = fit([ts.map((t) => ret.get(t))]);
+    const both = fit([ts.map((t) => ret.get(t)), ts.map((t) => box.get(t))]);
+    const r1 = (x) => Math.round(x * 10) / 10;
+    const last = [...box.keys()].filter((t) => ret.has(t)).sort().slice(-4);
+    return last.map((t) => {
+      const f = both.beta[0] + both.beta[1] * ret.get(t) + both.beta[2] * box.get(t);
+      return { month: add(t, 6), from: t, forecast: r1(f), low: r1(f - both.sd), high: r1(f + both.sd),
+        r2_own: Math.round(own.r2 * 100), r2_boxes: Math.round(both.r2 * 100), error: r1(both.sd), n: ts.length };
+    });
+  },
+});
+
+</script>
+
+<script>
+  const cbLoc = d3.formatLocale({ decimal: ',', thousands: ' ', grouping: [3], currency: ['', ' €'], minus: '−' });
+  const cbF1 = cbLoc.format('.1f');
+  const cbF0 = cbLoc.format('.0f');
+  const cbF2 = cbLoc.format('.2f');
+  const cbPct = (v) => cbLoc.format('+.1f')(v) + ' %';
+  const cbMon = ['jan', 'feb', 'mar', 'apr', 'máj', 'jún', 'júl', 'aug', 'sep', 'okt', 'nov', 'dec'];
+  const cbMonthName = (m) => `${cbMon[Number(m.slice(5)) - 1]} ${m.slice(0, 4)}`;
+  const cbDate = (m) => new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5)) - 1, 1));
+  const cbAdd = (m, k) => { const n = Number(m.slice(0, 4)) * 12 + Number(m.slice(5)) - 1 + k; return `${Math.floor(n / 12)}-${String((n % 12) + 1).padStart(2, '0')}`; };
+  const cbSeries = [
+    { key: 'sk_boxes', label: 'SK krabice', c: 0 },
+    { key: 'cz_boxes', label: 'CZ krabice', c: 1 },
+    { key: 'cz_paper', label: 'CZ papier', c: 2 },
+    { key: 'eu_corrugated', label: 'EU27 lepenka', c: 3 },
+    { key: 'de_corrugated', label: 'DE lepenka', c: 4 },
+  ];
+  const cbLag = () => { const v = Number(dash.params().lag); return Number.isFinite(v) ? v : 6; };
+
+  const cbCell = (el) => {
+    const d = dash.data(el.dataset.source);
+    if (d.status !== 'ok') return null;
+    let rows = d.data;
+    if (el.dataset.where) {
+      const w = [...new URLSearchParams(el.dataset.where)];
+      rows = rows.filter((r) => w.every(([k, v]) => String(r[k]) === v));
+    }
+    if (el.dataset.row != null) rows = [rows[Number(el.dataset.row)]];
+    const r = rows[0];
+    return r && r[el.dataset.field] != null ? r[el.dataset.field] : null;
+  };
+  const cbShow = (name, fmt) => dash.draw(name, (el) => { const v = cbCell(el); el.textContent = v == null ? '—' : fmt(v); });
+  cbShow('fc-month', cbMonthName);
+  cbShow('fc-value', cbPct);
+  cbShow('sk-index', cbF1);
+  cbShow('sk-yoy', cbPct);
+  cbShow('sk-month', cbMonthName);
+  cbShow('r6', cbF2);
+  cbShow('r6-n', String);
+  cbShow('r2-boxes', cbF0);
+  cbShow('r2-own', cbF0);
+  cbShow('fc-big', cbPct);
+  cbShow('fc-big-month', cbMonthName);
+  cbShow('fc-err', cbF1);
+
+  dash.draw('lag-n', (el) => { el.textContent = String(cbLag()); });
+  dash.draw('lag-r', (el) => {
+    el.dataset.field = 'r';
+    el.dataset.where = `country=sk&lag=${cbLag()}`;
+    const v = cbCell(el);
+    el.textContent = v == null ? '—' : cbF2(v);
+  });
+
+  document.querySelectorAll('.cb-win').forEach((b) => b.addEventListener('click', () => dash.setParams({ window: b.value })));
+  document.querySelectorAll('.cb-lag').forEach((i) => i.addEventListener('input', () => dash.setParams({ lag: Number(i.value) })));
+  dash.onData(() => {
+    const win = dash.params().window === '10y' ? '10y' : '2y';
+    document.querySelectorAll('.cb-win').forEach((b) => b.setAttribute('aria-pressed', String(b.value === win)));
+    document.querySelectorAll('.cb-note-2y').forEach((n) => { n.hidden = win !== '2y'; });
+    document.querySelectorAll('.cb-note-10y').forEach((n) => { n.hidden = win !== '10y'; });
+    document.querySelectorAll('.cb-lag').forEach((i) => { if (i !== document.activeElement) i.value = cbLag(); });
+    document.querySelectorAll('.cb-sw').forEach((s) => { if (s.dataset.color != null) s.style.background = dash.colors[Number(s.dataset.color)]; });
+  });
+
+  const cbState = (el, id) => {
+    const d = dash.data(id);
+    if (d.status === 'ok') { el.classList.remove('dash-skeleton'); return d; }
+    el.replaceChildren();
+    if (d.status === 'loading') el.classList.add('dash-skeleton');
+    else {
+      el.classList.remove('dash-skeleton');
+      if (d.status === 'error') { const f = document.createElement('div'); f.className = 'cb-fail'; f.textContent = 'Failed to load'; el.append(f); }
+    }
+    return null;
+  };
+  const cbAxis = (g) => g.attr('font-size', null).attr('font-family', null).call((s) => s.select('.domain').remove()).call((s) => s.selectAll('.tick line').attr('stroke', 'var(--cds-chart-grid)'));
+  const cbTip = (el) => { const t = document.createElement('div'); t.className = 'cb-tip'; t.hidden = true; el.append(t); return t; };
+  const cbTipRow = (tip, color, label, value) => {
+    const r = document.createElement('div'); r.className = 'cb-tip-r';
+    if (color) { const s = document.createElement('span'); s.className = 'cb-sw'; s.style.background = color; r.append(s); }
+    const t = document.createElement('span'); t.textContent = `${label} ${value}`; r.append(t); tip.append(r);
+  };
+  const cbPlace = (el, tip, x, y) => {
+    tip.hidden = false;
+    const w = tip.offsetWidth, W = el.clientWidth;
+    tip.style.left = `${Math.max(0, Math.min(W - w, x + 12 > W - w ? x - w - 12 : x + 12))}px`;
+    tip.style.top = `${Math.max(0, y - 10)}px`;
+  };
+
+  dash.draw('index-chart', (el) => {
+    const d = cbState(el, 'index');
+    if (!d) return;
+    const long = dash.params().window === '10y';
+    const field = long ? 'ma12' : 'ma3';
+    const since = long ? '2016-12' : '2024-09';
+    const lines = cbSeries.map((s) => ({ ...s, color: dash.colors[s.c], pts: d.data.filter((r) => r.series === s.key && r[field] != null && r.month >= since).map((r) => ({ m: r.month, date: cbDate(r.month), v: r[field] })) })).filter((s) => s.pts.length);
+    const W = Math.max(280, el.clientWidth), H = 340;
+    el.replaceChildren();
+    const svg = d3.select(el).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img').attr('aria-label', 'Index krabíc a lepenky v čase');
+    const probe = svg.append('g');
+    const labels = lines.map((s) => ({ s, text: `${s.label} ${cbF0(s.pts[s.pts.length - 1].v)}` }));
+    const labW = d3.max(labels, (l) => probe.append('text').attr('class', 'cb-end').text(l.text).node().getComputedTextLength());
+    const all = lines.flatMap((s) => s.pts.map((p) => p.v));
+    const y = d3.scaleLinear([Math.min(95, d3.min(all)) - 3, d3.max(all) + 3], [H - 28, 10]).nice();
+    const tickW = d3.max(y.ticks(6), (t) => probe.append('text').text(cbF0(t)).node().getComputedTextLength());
+    probe.remove();
+    const M = { l: tickW + 10, r: W < 480 ? 12 : labW + 24 };
+    const x = d3.scaleUtc([cbDate(since), d3.max(lines, (s) => s.pts[s.pts.length - 1].date)], [M.l, W - M.r]);
+    svg.append('g').attr('transform', `translate(${M.l},0)`).call(d3.axisLeft(y).ticks(6).tickSize(-(W - M.l - M.r)).tickFormat(cbF0)).call(cbAxis);
+    svg.append('g').attr('transform', `translate(0,${H - 28})`).call(d3.axisBottom(x).ticks(long ? d3.utcYear.every(W < 480 ? 3 : 1) : d3.utcMonth.every(W < 480 ? 6 : 3)).tickSize(0).tickPadding(10).tickFormat((t) => (long ? d3.utcFormat('%Y')(t) : cbMonthName(d3.utcFormat('%Y-%m')(t))))).call(cbAxis);
+    svg.append('line').attr('x1', M.l).attr('x2', W - M.r).attr('y1', y(100)).attr('y2', y(100)).attr('stroke', 'var(--cds-chart-reference)');
+    const line = d3.line().x((p) => x(p.date)).y((p) => y(p.v));
+    lines.forEach((s) => {
+      svg.append('path').attr('d', line(s.pts)).attr('fill', 'none').attr('stroke', s.color).attr('stroke-width', s.key === 'sk_boxes' ? 3 : 2).attr('stroke-linecap', 'round').attr('stroke-linejoin', 'round');
+      const e = s.pts[s.pts.length - 1];
+      svg.append('circle').attr('cx', x(e.date)).attr('cy', y(e.v)).attr('r', 4).attr('fill', s.color).attr('stroke', 'var(--color-panel)').attr('stroke-width', 2);
+    });
+    if (W >= 480) {
+      const ends = labels.map((l) => ({ ...l, y: y(l.s.pts[l.s.pts.length - 1].v) })).sort((a, b) => a.y - b.y);
+      ends.forEach((e, i) => { if (i && e.y < ends[i - 1].y + 15) e.y = ends[i - 1].y + 15; });
+      ends.forEach((e) => svg.append('text').attr('class', 'cb-end').attr('x', W - M.r + 10).attr('y', e.y).attr('dy', '0.35em').text(e.text));
+    }
+    const tip = cbTip(el);
+    const rule = svg.append('line').attr('y1', 10).attr('y2', H - 28).attr('stroke', 'var(--cds-chart-axis)').attr('opacity', 0);
+    const dots = svg.append('g');
+    const months = [...new Set(lines.flatMap((s) => s.pts.map((p) => p.m)))].sort();
+    svg.append('rect').attr('x', M.l).attr('y', 0).attr('width', W - M.l - M.r).attr('height', H - 28).attr('fill', 'transparent')
+      .on('pointermove', (ev) => {
+        const [px] = d3.pointer(ev);
+        const t = x.invert(px);
+        const m = months.reduce((a, b) => (Math.abs(cbDate(b) - t) < Math.abs(cbDate(a) - t) ? b : a));
+        rule.attr('x1', x(cbDate(m))).attr('x2', x(cbDate(m))).attr('opacity', 1);
+        dots.selectAll('*').remove();
+        tip.replaceChildren();
+        const h = document.createElement('div'); h.className = 'cb-tip-h'; h.textContent = cbMonthName(m); tip.append(h);
+        lines.forEach((s) => {
+          const p = s.pts.find((q) => q.m === m);
+          if (!p) return;
+          dots.append('circle').attr('cx', x(p.date)).attr('cy', y(p.v)).attr('r', 4).attr('fill', s.color).attr('stroke', 'var(--color-panel)').attr('stroke-width', 2);
+          cbTipRow(tip, s.color, s.label, cbF1(p.v));
+        });
+        cbPlace(el, tip, x(cbDate(m)) * el.clientWidth / W, 10);
+      })
+      .on('pointerleave', () => { tip.hidden = true; rule.attr('opacity', 0); dots.selectAll('*').remove(); });
+  });
+
+  dash.draw('lag-chart', (el) => {
+    const d = cbState(el, 'index');
+    if (!d) return;
+    const lag = cbLag();
+    const get = (s) => d.data.filter((r) => r.series === s && r.yoy3 != null && r.month >= '2017-01');
+    const box = get('sk_boxes').map((r) => ({ m: cbAdd(r.month, lag), v: r.yoy3 }));
+    const ret = get('sk_retail').map((r) => ({ m: r.month, v: r.yoy3 }));
+    const lines = [{ pts: box, color: dash.colors[0], label: 'Krabice' }, { pts: ret, color: dash.colors[5], label: 'Maloobchod' }];
+    const W = Math.max(260, el.clientWidth), H = 260;
+    el.replaceChildren();
+    const svg = d3.select(el).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img').attr('aria-label', 'Krabice posunuté dopredu a maloobchod');
+    const all = lines.flatMap((s) => s.pts.map((p) => p.v));
+    const y = d3.scaleLinear(d3.extent(all), [H - 26, 8]).nice();
+    const probe = svg.append('g');
+    const tickW = d3.max(y.ticks(5), (t) => probe.append('text').text(cbF0(t)).node().getComputedTextLength());
+    probe.remove();
+    const M = { l: tickW + 10, r: 8 };
+    const x = d3.scaleUtc([cbDate('2017-01'), cbDate(d3.max(all.length ? lines.flatMap((s) => s.pts.map((p) => p.m)) : ['2026-12']))], [M.l, W - M.r]);
+    svg.append('rect').attr('x', x(cbDate('2020-01'))).attr('width', x(cbDate('2022-01')) - x(cbDate('2020-01'))).attr('y', 8).attr('height', H - 34).attr('fill', 'var(--cds-chart-grid)').attr('opacity', 0.6);
+    svg.append('g').attr('transform', `translate(${M.l},0)`).call(d3.axisLeft(y).ticks(5).tickSize(-(W - M.l - M.r)).tickFormat(cbF0)).call(cbAxis);
+    svg.append('g').attr('transform', `translate(0,${H - 26})`).call(d3.axisBottom(x).ticks(W < 420 ? 4 : 8).tickSize(0).tickPadding(10).tickFormat(d3.utcFormat('%Y'))).call(cbAxis);
+    svg.append('line').attr('x1', M.l).attr('x2', W - M.r).attr('y1', y(0)).attr('y2', y(0)).attr('stroke', 'var(--cds-chart-reference)');
+    const line = d3.line().defined((p) => p.m >= '2017-01').x((p) => x(cbDate(p.m))).y((p) => y(p.v));
+    lines.forEach((s) => svg.append('path').attr('d', line(s.pts)).attr('fill', 'none').attr('stroke', s.color).attr('stroke-width', 2).attr('stroke-linecap', 'round').attr('stroke-linejoin', 'round'));
+    const tip = cbTip(el);
+    const rule = svg.append('line').attr('y1', 8).attr('y2', H - 26).attr('stroke', 'var(--cds-chart-axis)').attr('opacity', 0);
+    const months = [...new Set(lines.flatMap((s) => s.pts.map((p) => p.m)))].filter((m) => m >= '2017-01').sort();
+    svg.append('rect').attr('x', M.l).attr('y', 0).attr('width', W - M.l - M.r).attr('height', H - 26).attr('fill', 'transparent')
+      .on('pointermove', (ev) => {
+        const t = x.invert(d3.pointer(ev)[0]);
+        const m = months.reduce((a, b) => (Math.abs(cbDate(b) - t) < Math.abs(cbDate(a) - t) ? b : a));
+        rule.attr('x1', x(cbDate(m))).attr('x2', x(cbDate(m))).attr('opacity', 1);
+        tip.replaceChildren();
+        const h = document.createElement('div'); h.className = 'cb-tip-h'; h.textContent = cbMonthName(m); tip.append(h);
+        lines.forEach((s) => { const p = s.pts.find((q) => q.m === m); if (p) cbTipRow(tip, s.color, s.label, cbPct(p.v)); });
+        cbPlace(el, tip, x(cbDate(m)) * el.clientWidth / W, 8);
+      })
+      .on('pointerleave', () => { tip.hidden = true; rule.attr('opacity', 0); });
+  });
+
+  dash.draw('lag-bars', (el) => {
+    const d = cbState(el, 'lead');
+    if (!d) return;
+    const lag = cbLag();
+    const W = Math.max(260, el.clientWidth), H = 260;
+    el.replaceChildren();
+    const svg = d3.select(el).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img').attr('aria-label', 'Korelácia podľa posunu');
+    const lags = [...new Set(d.data.map((r) => r.lag))].sort((a, b) => a - b);
+    const y = d3.scaleLinear(d3.extent([0, ...d.data.map((r) => r.r)]), [H - 26, 8]).nice();
+    const probe = svg.append('g');
+    const tickW = d3.max(y.ticks(5), (t) => probe.append('text').text(cbLoc.format('.1f')(t)).node().getComputedTextLength());
+    probe.remove();
+    const M = { l: tickW + 10, r: 4 };
+    const x = d3.scaleBand(lags, [M.l, W - M.r]).padding(0.25);
+    const x2 = d3.scaleBand(['sk', 'cz'], [0, x.bandwidth()]).padding(0.1);
+    svg.append('g').attr('transform', `translate(${M.l},0)`).call(d3.axisLeft(y).ticks(5).tickSize(-(W - M.l - M.r)).tickFormat(cbLoc.format('.1f'))).call(cbAxis);
+    svg.append('g').attr('transform', `translate(0,${H - 26})`).call(d3.axisBottom(x).tickValues(lags.filter((l) => l % 3 === 0)).tickSize(0).tickPadding(10).tickFormat((l) => (l > 0 ? `+${l}` : String(l)))).call(cbAxis);
+    svg.append('line').attr('x1', M.l).attr('x2', W - M.r).attr('y1', y(0)).attr('y2', y(0)).attr('stroke', 'var(--cds-chart-axis)');
+    const tip = cbTip(el);
+    svg.append('g').selectAll('rect').data(d.data).join('rect')
+      .attr('x', (r) => x(r.lag) + x2(r.country)).attr('width', x2.bandwidth())
+      .attr('y', (r) => y(Math.max(0, r.r))).attr('height', (r) => Math.max(1, Math.abs(y(r.r) - y(0))))
+      .attr('rx', 2).attr('fill', (r) => (r.country === 'sk' ? dash.colors[0] : 'var(--cds-chart-muted)'))
+      .attr('opacity', (r) => (r.lag === lag ? 1 : 0.45));
+    svg.append('g').selectAll('rect').data(lags).join('rect')
+      .attr('x', (l) => x(l) - (x.step() * x.paddingInner()) / 2).attr('width', x.step()).attr('y', 0).attr('height', H - 26)
+      .attr('fill', 'transparent').style('cursor', 'pointer')
+      .on('click', (ev, l) => { if (l >= 0 && l <= 12) dash.setParams({ lag: l }); })
+      .on('pointermove', (ev, l) => {
+        tip.replaceChildren();
+        const h = document.createElement('div'); h.className = 'cb-tip-h'; h.textContent = `posun ${l > 0 ? '+' : ''}${l} mes.`; tip.append(h);
+        d.data.filter((r) => r.lag === l).forEach((r) => cbTipRow(tip, r.country === 'sk' ? dash.colors[0] : 'var(--cds-chart-muted)', r.country === 'sk' ? 'Slovensko' : 'Česko', cbF2(r.r)));
+        cbPlace(el, tip, (x(l) + x.bandwidth() / 2) * el.clientWidth / W, 8);
+      })
+      .on('pointerleave', () => { tip.hidden = true; });
+  });
+
+  dash.draw('forecast-rows', (el) => {
+    const d = dash.data('model');
+    el.replaceChildren();
+    if (d.status !== 'ok') return;
+    d.data.forEach((r) => {
+      const tr = document.createElement('tr');
+      tr.dataset.key = r.month;
+      [cbMonthName(r.month), cbMonthName(r.from), cbPct(r.forecast), cbPct(r.low), cbPct(r.high)].forEach((v) => { const td = document.createElement('td'); td.textContent = v; tr.append(td); });
+      el.append(tr);
+    });
+  });
+
+  const cbNamed = document.getElementById(location.hash.slice(1));
+  if (cbNamed) cbNamed.scrollIntoView();
+</script>
+
+<footer class="cb-foot">
+  <p>Zdroj: Eurostat (Comext DS-045409, sts_inpr_m, sts_trtu_m), dáta k 28. 10. 2026. Výpočty bežia v prehliadači z pôvodných sérií v priečinku <a href="https://github.com/petijeee/cardboard-box-index/tree/main/data">data</a>. Pripravil Peter Urbanec.</p>
+</footer>
+<script>dash.start();</script>
+</div>
+</body>
+</html>
